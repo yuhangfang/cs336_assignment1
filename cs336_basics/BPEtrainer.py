@@ -108,15 +108,16 @@ def process_chunk(args):
     
 def get_word_tokens(word: str):
     """Convert a word into a list of character tokens (initial state for BPE)"""
-    return list(word)
+    word_bytes = word.encode('utf-8')
+    return [bytes([b]) for b in word_bytes]
 
-def get_byte_pair(word_tokens: list[str]):
+def get_byte_pair(word_tokens: list[bytes]):
     pairs = []
     for i in range(len(word_tokens) - 1):
         pairs.append((word_tokens[i], word_tokens[i + 1])) 
     return pairs
 
-def count_pairs_from_tokenizations(word_to_tokens: dict[str, list[str]], token_counts: dict[str, int]) -> dict[tuple[str, str], int]:
+def count_pairs_from_tokenizations(word_to_tokens: dict[str, list[bytes]], token_counts: dict[str, int]) -> dict[tuple[bytes, bytes], int]:
     byte_pair_dict = {}
 
     for word, count in token_counts.items():
@@ -127,7 +128,7 @@ def count_pairs_from_tokenizations(word_to_tokens: dict[str, list[str]], token_c
 
     return byte_pair_dict
 
-def merge_tokens(tokens: list[str], pair: tuple[str, str]) -> list[str]:
+def merge_tokens(tokens: list[bytes], pair: tuple[bytes, bytes]) -> list[bytes]:
     new_tokens = []
     n = len(tokens)
     i = 0
@@ -140,29 +141,29 @@ def merge_tokens(tokens: list[str], pair: tuple[str, str]) -> list[str]:
             i += 1
     return new_tokens
 
-def bpe_vocab_builder(merges: list[tuple[str, str]], special_tokens: list[str]) -> dict[int, str]:
+def bpe_vocab_builder(merges: list[tuple[bytes, bytes]], special_tokens: list[str]) -> dict[int, bytes]:
     # Start with special tokens and byte characters
     token_id = -1
     vocab = {}
     for token in special_tokens:
         token_id += 1
-        vocab[token_id] = token
+        vocab[token_id] = token.encode('utf-8')
     
     # Add all 256 byte characters
     for i in range(256):
         token_id += 1
-        vocab[token_id] = chr(i)
+        vocab[token_id] = bytes([i])
         
     
     # Add merged tokens
     for merge in merges:
-        merged_token = ''.join(merge)
+        merged_token = b''.join(merge)
         token_id += 1
         vocab[token_id] = merged_token
     
     return vocab
 
-def bpe_trainer(token_counts: dict[str, int], vocab_size: int, special_tokens: list[str]) -> list[str]: 
+def bpe_trainer(token_counts: dict[str, int], vocab_size: int, special_tokens: list[str]) -> list[tuple[bytes, bytes]]: 
 
     num_merges = vocab_size - len(special_tokens) - 256
     print(f"Starting BPE training with {len(token_counts)} unique words and {num_merges} merges")
@@ -276,14 +277,95 @@ def train_bpe(input_path, vocab_size, special_tokens):
 
 
     return vocab, merges
+
+
+def apply_bpe_merges(word: str, merges: list[tuple[bytes, bytes]], vocab_idx: dict[bytes, int]) -> list[bytes]:
+    word_bytes_list = get_word_tokens(word)
+    word_bytes_set = set(word_bytes_list)
+    word_indices = []
+    
+    for merge_pair in merges:
+        # print(f"Merge pair: {merge_pair}")
+        if merge_pair[0] in word_bytes_set and merge_pair[1] in word_bytes_set:
+            word_bytes_list = merge_tokens(word_bytes_list, merge_pair)
+
+    print(f"Word bytes list: {word_bytes_list}")
+    
+    for word_byte in word_bytes_list:        
+        word_indices.append(vocab_idx.get(word_byte, -1))
+
+    return word_indices
+
+
+def tokenizer_encoder(vocab: dict[int, bytes], merges: list[tuple[bytes, bytes]], special_tokens: list[str], text: str) -> list[int]:
+    # Step 1:  Split chunk into documents (removes special tokens)
+    vocab_idx = {v: k for k, v in vocab.items()}
+    split_pattern = "|".join(re.escape(token) for token in special_tokens)
+    documents = re.split(split_pattern, text)
+
+    tokens_ids = []
+    endoftext_id = vocab_idx["<|endoftext|>".encode('utf-8')]
+    
+    for doc in documents:
         
+        pretokenization_pattern = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
+        matches = list(re.finditer(pretokenization_pattern, doc))
+        
+        doc_tokens = [match.group() for match in matches]
+
+        for word in doc_tokens:
+            word_token_ids = apply_bpe_merges(word, merges, vocab_idx)
+            tokens_ids.extend(word_token_ids)
+            
+        tokens_ids.append(endoftext_id)
+
+    return tokens_ids
+   
+
 
 if __name__ == "__main__":
-    ## Usage
-    input_path = "/Users/yuhangfang/Documents/learning/LLMfromScratch/assignment1-basics-main/cs336_basics/data/TinyStoriesV2-GPT4-valid.txt"
-    vocab_size = 1000
-    special_tokens = ["<|endoftext|>"]
+    # ## train_bpe
+    # input_path = "/Users/yuhangfang/Documents/learning/LLMfromScratch/assignment1-basics-main/cs336_basics/data/TinyStoriesV2-GPT4-valid.txt"
+    # vocab_size = 1000
+    # special_tokens = ["<|endoftext|>"]
 
-    train_bpe(input_path, vocab_size, special_tokens)
+    # vocab, merges = train_bpe(input_path, vocab_size, special_tokens)
+    # print(f"Vocab: {vocab}")
+    # print(f"Merges: {merges}")
+    
+
+    import json
+
+    vocab_filepath = "/Users/yuhangfang/Documents/learning/LLMfromScratch/assignment1-basics-main/cs336_basics/data/vocab.json"
+    merges_filepath = "/Users/yuhangfang/Documents/learning/LLMfromScratch/assignment1-basics-main/cs336_basics/data/merges.json"
+
+    # # # Convert vocab keys to strings for JSON compatibility
+    # # vocab_json = {str(k): v.decode('utf-8', errors='replace') for k, v in vocab.items()}
+    # # merges_json = [[m[0].decode('utf-8', errors='replace'), m[1].decode('utf-8', errors='replace')] for m in merges]
+
+    # with open(vocab_filepath, 'w', encoding='utf-8') as f:
+    #     json.dump(vocab_json, f, ensure_ascii=False, indent=2)
+
+    # with open(merges_filepath, 'w', encoding='utf-8') as f:
+    #     json.dump(merges_json, f, ensure_ascii=False, indent=2)
+
+    # ## bpe_encoder
+
+    with open(vocab_filepath, 'r', encoding='utf-8') as f:
+        vocab_json = json.load(f)
+        vocab = {int(k): v.encode('utf-8') for k, v in vocab_json.items()}
+    
+    # Load merges  
+    with open(merges_filepath, 'r', encoding='utf-8') as f:
+        merges_json = json.load(f)
+        merges = [(m[0].encode('utf-8'), m[1].encode('utf-8')) for m in merges_json]
+        
+
+    text = "Hello, world!"
+    special_tokens = ["<|endoftext|>"]
+    tokens = tokenizer_encoder(vocab, merges, special_tokens, text)
+    print(f"Tokens: {tokens}")
+
+
 
 
