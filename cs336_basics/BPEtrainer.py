@@ -324,47 +324,15 @@ def tokenizer_encoder(vocab: dict[int, bytes], merges: list[tuple[bytes, bytes]]
 
 
 if __name__ == "__main__":
-    # ## train_bpe
-    # input_path = "/Users/yuhangfang/Documents/learning/LLMfromScratch/assignment1-basics-main/cs336_basics/data/TinyStoriesV2-GPT4-valid.txt"
-    # vocab_size = 1000
-    # special_tokens = ["<|endoftext|>"]
-
-    # vocab, merges = train_bpe(input_path, vocab_size, special_tokens)
-    # print(f"Vocab: {vocab}")
-    # print(f"Merges: {merges}")
-    
-
-    import json
-
-    vocab_filepath = "/Users/yuhangfang/Documents/learning/LLMfromScratch/assignment1-basics-main/cs336_basics/data/vocab.json"
-    merges_filepath = "/Users/yuhangfang/Documents/learning/LLMfromScratch/assignment1-basics-main/cs336_basics/data/merges.json"
-
-    # # # Convert vocab keys to strings for JSON compatibility
-    # # vocab_json = {str(k): v.decode('utf-8', errors='replace') for k, v in vocab.items()}
-    # # merges_json = [[m[0].decode('utf-8', errors='replace'), m[1].decode('utf-8', errors='replace')] for m in merges]
-
-    # with open(vocab_filepath, 'w', encoding='utf-8') as f:
-    #     json.dump(vocab_json, f, ensure_ascii=False, indent=2)
-
-    # with open(merges_filepath, 'w', encoding='utf-8') as f:
-    #     json.dump(merges_json, f, ensure_ascii=False, indent=2)
-
-    # ## bpe_encoder
-
-    with open(vocab_filepath, 'r', encoding='utf-8') as f:
-        vocab_json = json.load(f)
-        vocab = {int(k): v.encode('utf-8') for k, v in vocab_json.items()}
-    
-    # Load merges  
-    with open(merges_filepath, 'r', encoding='utf-8') as f:
-        merges_json = json.load(f)
-        merges = [(m[0].encode('utf-8'), m[1].encode('utf-8')) for m in merges_json]
-        
-
-    text = "Hello, world!"
+    ## train_bpe
+    input_path = "/Users/yuhangfang/Documents/learning/LLMfromScratch/assignment1-basics-main/cs336_basics/data/TinyStoriesV2-GPT4-valid.txt"
+    vocab_size = 1000
     special_tokens = ["<|endoftext|>"]
-    tokens = tokenizer_encoder(vocab, merges, special_tokens, text)
-    print(f"Tokens: {tokens}")
+
+    vocab, merges = train_bpe(input_path, vocab_size, special_tokens)
+    print(f"Vocab: {vocab}")
+    print(f"Merges: {merges}")
+    
 
 
 

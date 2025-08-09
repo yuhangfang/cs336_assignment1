@@ -51,12 +51,23 @@ def test_print_2_2b():
 
 from cs336_basics.BPEtrainer import train_bpe
 
-
+from cs336_basics.BPEencoder import Tokenizer
 ## Usage
 if __name__ == "__main__":
     ## Usage
-    input_path = "/Users/yuhangfang/Documents/learning/LLMfromScratch/assignment1-basics-main/cs336_basics/data/TinyStoriesV2-GPT4-valid.txt"
-    vocab_size = 1000
+    # input_path = "/Users/yuhangfang/Documents/learning/LLMfromScratch/assignment1-basics-main/cs336_basics/data/TinyStoriesV2-GPT4-valid.txt"
+    # vocab_size = 1000
     special_tokens = ["<|endoftext|>"]
 
-    train_bpe(input_path, vocab_size, special_tokens)
+    # train_bpe(input_path, vocab_size, special_tokens)
+
+    vocab_filepath = "/Users/yuhangfang/Documents/learning/LLMfromScratch/assignment1-basics-main/cs336_basics/data/vocab.json"
+    merges_filepath = "/Users/yuhangfang/Documents/learning/LLMfromScratch/assignment1-basics-main/cs336_basics/data/merges.json"
+
+    tokener = Tokenizer.from_files(vocab_filepath, merges_filepath, special_tokens)
+    tokenized = tokener.encode("I am a boy.<|endoftext|> She is a girl.")
+    print('tokenized', tokenized)
+
+    detokenized = tokener.decode(tokenized)
+    print('detokenized', detokenized)
+
