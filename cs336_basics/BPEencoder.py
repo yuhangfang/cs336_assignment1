@@ -45,20 +45,27 @@ class Tokenizer:
                 i += 1
         return new_tokens
 
-    def apply_bpe_merges(self, word: str, merges: list[tuple[bytes, bytes]], vocab_idx: dict[bytes, int]) -> list[bytes]:
+    def apply_bpe_merges(self, word: str, merges: list[tuple[bytes, bytes]], vocab_idx: dict[bytes, int]) -> list[int]:
+        """Apply BPE merges to a word and return token IDs"""
         word_bytes_list = self.get_word_tokens(word)
         word_bytes_set = set(word_bytes_list)
-        word_indices = []
         
+        # Apply merges in order
         for merge_pair in merges:
-            # print(f"Merge pair: {merge_pair}")
             if merge_pair[0] in word_bytes_set and merge_pair[1] in word_bytes_set:
                 word_bytes_list = self.merge_tokens(word_bytes_list, merge_pair)
+                word_bytes_set = set(word_bytes_list)
 
-        print(f"Word bytes list: {word_bytes_list}")
+            # word_bytes_list = self.merge_tokens(word_bytes_list, merge_pair)
         
+        # Convert to token IDs
+        word_indices = []
         for word_byte in word_bytes_list:        
-            word_indices.append(vocab_idx.get(word_byte, -1))
+            token_id = vocab_idx.get(word_byte, -1)
+            if token_id == -1:
+                # If token not found, this shouldn't happen with proper vocab
+                raise ValueError(f"Token {word_byte} not found in vocabulary")
+            word_indices.append(token_id)
 
         return word_indices
 
@@ -82,29 +89,50 @@ class Tokenizer:
     
     
     def encode(self, text: str) -> list[int]:
-        # Step 1:  Split chunk into documents (removes special tokens)
+        # Handle empty string case
+        if not text:
+            return []
+            
         vocab_idx = {v: k for k, v in self.vocab.items()}
-        split_pattern = "|".join(re.escape(token) for token in self.special_tokens)
-        documents = re.split(split_pattern, text)
-
         tokens_ids = []
-        endoftext_id = vocab_idx["<|endoftext|>".encode('utf-8')]
         
-        for doc in documents:
+        # Handle special tokens if they exist
+        if self.special_tokens:
+            # Sort special tokens by length (longest first) to handle overlapping tokens
+            sorted_special_tokens = sorted(self.special_tokens, key=len, reverse=True)
+            # Split text while keeping delimiters (special tokens)
+            split_pattern = f"({'|'.join(re.escape(token) for token in sorted_special_tokens)})"
+            parts = re.split(split_pattern, text)
             
-            pretokenization_pattern = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
-            matches = list(re.finditer(pretokenization_pattern, doc))
-            
-            doc_tokens = [match.group() for match in matches]
-
-            for word in doc_tokens:
-                word_token_ids = self.apply_bpe_merges(word, self.merges, vocab_idx)
-                tokens_ids.extend(word_token_ids)
-                
-            if len(documents)>1:
-                tokens_ids.append(endoftext_id)
+            for part in parts:
+                if part in self.special_tokens:
+                    # Add special token
+                    special_token_bytes = part.encode('utf-8')
+                    if special_token_bytes in vocab_idx:
+                        tokens_ids.append(vocab_idx[special_token_bytes])
+                elif part:  # Non-empty regular text
+                    tokens_ids.extend(self._encode_text_chunk(part, vocab_idx))
+        else:
+            # No special tokens, just encode the whole text
+            tokens_ids.extend(self._encode_text_chunk(text, vocab_idx))
 
         return tokens_ids
+    
+    def _encode_text_chunk(self, text: str, vocab_idx: dict[bytes, int]) -> list[int]:
+        """Encode a chunk of text without special tokens"""
+        if not text:
+            return []
+            
+        pretokenization_pattern = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
+        matches = list(re.finditer(pretokenization_pattern, text))
+        
+        chunk_tokens = []
+        for match in matches:
+            word = match.group()
+            word_token_ids = self.apply_bpe_merges(word, self.merges, vocab_idx)
+            chunk_tokens.extend(word_token_ids)
+            
+        return chunk_tokens
    
 
 
@@ -115,19 +143,21 @@ class Tokenizer:
         memory.
         """
         for text_line in iterable:
-            # Use the existing encode method for each line
-            if text_line.strip():  # Only process non-empty lines
-                token_ids = self.encode(text_line.rstrip('\n\r'))  # Remove line endings but keep other whitespace
-                for token_id in token_ids:
-                    yield token_id
+            # Don't strip or modify the text - process it exactly as is
+            token_ids = self.encode(text_line)
+            for token_id in token_ids:
+                yield token_id
 
     def decode(self, ids: list[int]) -> str:
-        decoded_string = ""
+        # Concatenate all token bytes first, then decode as UTF-8
+        all_bytes = b""
         for token_id in ids:
-            token_bytes  = self.vocab[token_id]
-            decoded_string += token_bytes.decode('utf-8')
-
-        return decoded_string
+            token_bytes = self.vocab[token_id]
+            all_bytes += token_bytes
+        
+        # Use 'replace' error handling to match tiktoken behavior for individual tokens
+        # that may contain partial UTF-8 sequences
+        return all_bytes.decode('utf-8', errors='replace')
         
 
 ## Usage
