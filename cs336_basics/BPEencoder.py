@@ -1,5 +1,6 @@
 from collections.abc import Iterator, Iterable
 import json
+import os
 import regex as re
 
 class Tokenizer:
@@ -74,15 +75,17 @@ class Tokenizer:
     @classmethod
     def from_files(cls, vocab_filepath: str, merges_filepath: str, special_tokens: list[str]=None):
         """Load tokenizer from saved vocab and merges files"""
+        import base64
+        
         # Load vocab
         with open(vocab_filepath, 'r', encoding='utf-8') as f:
             vocab_json = json.load(f)
-            vocab = {int(k): v.encode('utf-8') for k, v in vocab_json.items()}
+            vocab = {int(k): base64.b64decode(v.encode('ascii')) for k, v in vocab_json.items()}
         
         # Load merges  
         with open(merges_filepath, 'r', encoding='utf-8') as f:
             merges_json = json.load(f)
-            merges = [(m[0].encode('utf-8'), m[1].encode('utf-8')) for m in merges_json]
+            merges = [(base64.b64decode(m[0].encode('ascii')), base64.b64decode(m[1].encode('ascii'))) for m in merges_json]
         
         # Create and return tokenizer instance using __init__
         return cls(vocab, merges, special_tokens)
@@ -164,12 +167,33 @@ class Tokenizer:
 if __name__ == "__main__":
 
     special_tokens = ["<|endoftext|>"]
-    vocab_filepath = "/Users/yuhangfang/Documents/learning/LLMfromScratch/assignment1-basics-main/cs336_basics/data/vocab.json"
-    merges_filepath = "/Users/yuhangfang/Documents/learning/LLMfromScratch/assignment1-basics-main/cs336_basics/data/merges.json"
+    vocab_size = 10000
+    train_path = "/Users/yuhangfang/Documents/learning/LLMfromScratch/assignment1-basics-main/cs336_basics/data/TinyStoriesV2-GPT4-train.txt"
+    # Extract filename from input path (without extension)
+    filename = os.path.splitext(os.path.basename(train_path))[0]
+    
+    # Create filenames based on training data and vocab size
+    vocab_filename = f"{filename}_vocab_{vocab_size}.json"
+    merges_filename = f"{filename}_merges_{vocab_size}.json"
+    
+    vocab_filepath = f"/Users/yuhangfang/Documents/learning/LLMfromScratch/assignment1-basics-main/cs336_basics/data/{vocab_filename}"
+    merges_filepath = f"/Users/yuhangfang/Documents/learning/LLMfromScratch/assignment1-basics-main/cs336_basics/data/{merges_filename}"
 
     tokener = Tokenizer.from_files(vocab_filepath, merges_filepath, special_tokens)
-    tokenized = tokener.encode("I am a boy.<|endoftext|> She is a girl.")
-    print('tokenized', tokenized)
+
+    valid_path = "/Users/yuhangfang/Documents/learning/LLMfromScratch/assignment1-basics-main/cs336_basics/data/TinyStoriesV2-GPT4-valid.txt"
+    with open(valid_path, 'r', encoding='utf-8') as f:
+        valid_text = f.read()
+
+    tokenized = tokener.encode(valid_text)
+    print('tokenized', tokenized[:100])
 
     detokenized = tokener.decode(tokenized)
-    print('detokenized', detokenized)
+    # compare with the valid_text
+    if detokenized == valid_text:
+        print('detokenized == valid_text')
+    else:
+        print('detokenized != valid_text')
+        # print the first 100 characters of the difference
+        print(detokenized[:100], valid_text[:100])
+    

@@ -1,4 +1,5 @@
 import os
+import json
 from typing import BinaryIO
 import multiprocessing as mp
 from multiprocessing import shared_memory
@@ -325,15 +326,59 @@ def tokenizer_encoder(vocab: dict[int, bytes], merges: list[tuple[bytes, bytes]]
    
 
 
+def save_to_json(vocab, merges, input_path, vocab_size):
+    """
+    Save vocabulary and merges to JSON files named after the training data.
+    """
+    # Extract filename from input path (without extension)
+    filename = os.path.splitext(os.path.basename(input_path))[0]
+    
+    # Get the directory where the input file is located
+    input_dir = os.path.dirname(input_path)
+    
+    # Create filenames based on training data and vocab size
+    vocab_filename = f"{filename}_vocab_{vocab_size}.json"
+    merges_filename = f"{filename}_merges_{vocab_size}.json"
+    
+    # Create full paths in the same directory as input file
+    vocab_filepath = os.path.join(input_dir, vocab_filename)
+    merges_filepath = os.path.join(input_dir, merges_filename)
+    
+    # Convert vocab (bytes values) to JSON-serializable format
+    # Use base64 encoding to preserve all byte values exactly
+    import base64
+    vocab_json = {str(k): base64.b64encode(v).decode('ascii') for k, v in vocab.items()}
+    
+    # Convert merges (bytes tuples) to JSON-serializable format  
+    merges_json = [[base64.b64encode(merge[0]).decode('ascii'), 
+                    base64.b64encode(merge[1]).decode('ascii')] for merge in merges]
+    
+    # Save vocab to JSON
+    with open(vocab_filepath, 'w', encoding='utf-8') as f:
+        json.dump(vocab_json, f, indent=2, ensure_ascii=False)
+    print(f"Vocabulary saved to: {vocab_filepath}")
+    
+    # Save merges to JSON
+    with open(merges_filepath, 'w', encoding='utf-8') as f:
+        json.dump(merges_json, f, indent=2, ensure_ascii=False)
+    print(f"Merges saved to: {merges_filepath}")
+
+
 if __name__ == "__main__":
     ## train_bpe
-    input_path = "/Users/yuhangfang/Documents/learning/LLMfromScratch/assignment1-basics-main/cs336_basics/data/TinyStoriesV2-GPT4-valid.txt"
-    vocab_size = 1000
+    input_path = "/Users/yuhangfang/Documents/learning/LLMfromScratch/assignment1-basics-main/cs336_basics/data/TinyStoriesV2-GPT4-train.txt"
+    vocab_size = 10000
     special_tokens = ["<|endoftext|>"]
 
+    print("Training BPE tokenizer...")
     vocab, merges = train_bpe(input_path, vocab_size, special_tokens)
-    print(f"Vocab: {vocab}")
-    print(f"Merges: {merges}")
+    
+    print(f"\nTraining complete!")
+    print(f"Vocabulary size: {len(vocab)}")
+    print(f"Number of merges: {len(merges)}")
+    
+    # Save to JSON files
+    save_to_json(vocab, merges, input_path, vocab_size)
     
 
 
