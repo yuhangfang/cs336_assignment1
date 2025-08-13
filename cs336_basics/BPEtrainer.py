@@ -69,8 +69,8 @@ def process_chunk(args):
         split_pattern = "|".join(re.escape(token) for token in special_tokens)
         documents = re.split(split_pattern, chunk_data)
 
-        # Step 2: Filter out empty documents
-        documents = [doc.strip() for doc in documents if doc.strip()]
+        # Step 2: Filter out empty documents but preserve internal whitespace
+        documents = [doc for doc in documents if doc.strip()]
         
         # Step 3: Pre-tokenize each document separately
         all_tokens = []
@@ -228,6 +228,8 @@ def train_bpe(input_path, vocab_size, special_tokens):
         
         print(f"Found {len(boundaries)-1} chunks with boundaries at: {boundaries}")
 
+        # Reset file pointer to beginning after find_chunk_boundaries
+        f.seek(0)
         file_data = f.read()
         file_size = len(file_data)
         
