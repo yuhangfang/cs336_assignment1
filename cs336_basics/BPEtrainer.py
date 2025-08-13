@@ -3,9 +3,121 @@ import json
 import time
 import gc
 import psutil
+import sys
 from typing import BinaryIO
 import multiprocessing as mp
 import regex as re
+from datetime import datetime, timedelta
+
+class ProgressTracker:
+    """Enhanced progress tracking for BPE training."""
+    
+    def __init__(self, total_steps, phase_name, show_memory=True):
+        self.total_steps = total_steps
+        self.phase_name = phase_name
+        self.show_memory = show_memory
+        self.start_time = time.time()
+        self.current_step = 0
+        self.last_update = 0
+        
+    def update(self, step=None, extra_info=""):
+        """Update progress and display status."""
+        if step is not None:
+            self.current_step = step
+        else:
+            self.current_step += 1
+            
+        current_time = time.time()
+        
+        # Update every second or on significant steps
+        if current_time - self.last_update >= 1.0 or self.current_step % 100 == 0 or self.current_step == self.total_steps:
+            self.last_update = current_time
+            self._display_progress(extra_info)
+    
+    def _display_progress(self, extra_info=""):
+        """Display formatted progress information."""
+        elapsed = time.time() - self.start_time
+        progress = self.current_step / self.total_steps
+        
+        # Calculate ETA
+        if progress > 0:
+            total_estimated = elapsed / progress
+            eta = total_estimated - elapsed
+            eta_str = self._format_time(eta)
+        else:
+            eta_str = "calculating..."
+        
+        # Create progress bar
+        bar_length = 30
+        filled = int(bar_length * progress)
+        bar = "█" * filled + "░" * (bar_length - filled)
+        
+        # Memory info
+        memory_str = ""
+        if self.show_memory:
+            memory = psutil.virtual_memory()
+            memory_str = f" | RAM: {memory.percent:.1f}%"
+        
+        # Format output
+        elapsed_str = self._format_time(elapsed)
+        print(f"\r🔥 {self.phase_name}: [{bar}] {progress:.1%} "
+              f"({self.current_step:,}/{self.total_steps:,}) | "
+              f"⏱️  {elapsed_str} | ETA: {eta_str}{memory_str} {extra_info}", 
+              end="", flush=True)
+        
+        if self.current_step == self.total_steps:
+            print()  # New line when complete
+    
+    def _format_time(self, seconds):
+        """Format seconds into readable time string."""
+        if seconds < 60:
+            return f"{seconds:.0f}s"
+        elif seconds < 3600:
+            return f"{seconds//60:.0f}m {seconds%60:.0f}s"
+        else:
+            hours = seconds // 3600
+            minutes = (seconds % 3600) // 60
+            return f"{hours:.0f}h {minutes:.0f}m"
+
+def print_phase_header(phase_name, details=""):
+    """Print a formatted phase header."""
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    print(f"\n{'='*60}")
+    print(f"🚀 [{timestamp}] {phase_name}")
+    if details:
+        print(f"   {details}")
+    print(f"{'='*60}")
+
+def print_system_stats():
+    """Print current system statistics."""
+    # CPU info
+    cpu_percent = psutil.cpu_percent(interval=0.1)
+    cpu_count = psutil.cpu_count()
+    
+    # Memory info
+    memory = psutil.virtual_memory()
+    memory_gb = memory.total / (1024**3)
+    used_gb = memory.used / (1024**3)
+    available_gb = memory.available / (1024**3)
+    
+    print(f"💻 System Status:")
+    print(f"   CPU: {cpu_percent:.1f}% ({cpu_count} cores)")
+    print(f"   RAM: {used_gb:.1f}GB / {memory_gb:.1f}GB ({memory.percent:.1f}%)")
+    print(f"   Available: {available_gb:.1f}GB")
+
+def print_training_summary(phase_results):
+    """Print a summary of training results."""
+    print(f"\n{'='*60}")
+    print(f"📊 TRAINING SUMMARY")
+    print(f"{'='*60}")
+    
+    for phase, result in phase_results.items():
+        duration = result.get('duration', 0)
+        print(f"{phase}: {duration:.1f}s ({duration/60:.1f}m)")
+    
+    total_time = sum(r.get('duration', 0) for r in phase_results.values())
+    print(f"{'─'*40}")
+    print(f"Total Training Time: {total_time:.1f}s ({total_time/60:.1f}m)")
 
 def calculate_optimal_chunk_size(file_size_bytes: int, available_memory_gb: float = None) -> tuple[int, str]:
     """
@@ -262,24 +374,36 @@ def bpe_vocab_builder(merges: list[tuple[bytes, bytes]], special_tokens: list[st
 def bpe_trainer(token_counts: dict[str, int], vocab_size: int, special_tokens: list[str]) -> list[tuple[bytes, bytes]]: 
 
     num_merges = vocab_size - len(special_tokens) - 256
-    print(f"Starting BPE training with {len(token_counts)} unique words and {num_merges} merges")
+    
+    print_phase_header("BPE MERGE TRAINING", 
+                      f"{len(token_counts):,} unique words → {num_merges:,} merges")
     
     # Initialize: each word starts as character tokens
+    print("🔧 Initializing word tokenizations...")
+    init_start = time.time()
     word_to_tokens = {}
-    for word in token_counts:
+    init_progress = ProgressTracker(len(token_counts), "Initialization", show_memory=False)
+    
+    for i, word in enumerate(token_counts):
         word_to_tokens[word] = get_word_tokens(word)
+        if i % 1000 == 0:
+            init_progress.update(i)
+    init_progress.update(len(token_counts))
+    
+    init_time = time.time() - init_start
+    print(f"✅ Initialization complete in {init_time:.1f}s")
     
     merges = []
+    merge_progress = ProgressTracker(num_merges, "BPE Merges")
     
     for merge_num in range(num_merges):
-        if (merge_num + 1) % 100 == 0 or merge_num == 0:
-            print(f"\n=== Merge {merge_num + 1}/{num_merges} ===")
+        merge_start = time.time()
         
         # Count all pairs across the current vocabulary
         pair_counts = count_pairs_from_tokenizations(word_to_tokens, token_counts)
         
         if not pair_counts:
-            print("No more pairs to merge!")
+            print("\n⚠️  No more pairs to merge!")
             break
         
         # Find most frequent pair (with lexicographic tiebreaking)
@@ -287,8 +411,6 @@ def bpe_trainer(token_counts: dict[str, int], vocab_size: int, special_tokens: l
                                key=lambda x: (x[1], x[0]))  # Sort by count, then lexicographically
         
         pair_to_merge, frequency = most_frequent_pair
-        if (merge_num + 1) % 100 == 0 or merge_num == 0:
-            print(f"Most frequent pair: {pair_to_merge} (frequency: {frequency})")
         
         # Clear pair_counts to free memory
         del pair_counts
@@ -297,20 +419,26 @@ def bpe_trainer(token_counts: dict[str, int], vocab_size: int, special_tokens: l
         merge_tuple = (pair_to_merge[0], pair_to_merge[1])
         merges.append(merge_tuple)
         
-        j = 0
         # Apply the merge to all words
+        words_affected = 0
         for word in word_to_tokens:
             word_to_tokens_set = set(word_to_tokens[word])
             if pair_to_merge[0] in word_to_tokens_set and pair_to_merge[1] in word_to_tokens_set:
                 word_to_tokens[word] = merge_tokens(word_to_tokens[word], pair_to_merge)
-                j += 1
-                if j < 5 and ((merge_num + 1) % 100 == 0 or merge_num == 0):
-                    print(f"  '{word}' -> {word_to_tokens[word]}")
+                words_affected += 1
 
-    print(f"\nBPE training complete! Performed {len(merges)} merges.")
-    # print(f"Final merges: {merges}")
-    # merges: list[tuple[bytes, bytes]] A list of BPE merges produced from training. Each list item is a tuple of bytes (<token1>, <token2>), representing that <token1> was merged with <token2>. The merges should be ordered by order of creation.
+        # Update progress with detailed info
+        merge_time = time.time() - merge_start
+        extra_info = f"| freq: {frequency:,} | affected: {words_affected:,} | {merge_time:.2f}s"
+        merge_progress.update(merge_num + 1, extra_info)
+        
+        # Detailed logging every 1000 merges
+        if (merge_num + 1) % 1000 == 0:
+            pair_str = f"{pair_to_merge[0]} + {pair_to_merge[1]}"
+            print(f"\n   Merge #{merge_num + 1}: {pair_str} (freq: {frequency:,}, affected: {words_affected:,} words)")
 
+    print(f"\n✅ BPE training complete! Performed {len(merges):,} merges.")
+    
     return merges
 
 
@@ -325,17 +453,25 @@ def train_bpe(input_path, vocab_size, special_tokens, max_chunk_size_mb=None):
         max_chunk_size_mb: Maximum chunk size in MB. If None, will be auto-calculated based on available memory
     """
     
+    training_start = time.time()
+    phase_results = {}
+    
+    # Print header
+    print_phase_header("BPE TOKENIZER TRAINING", 
+                      f"File: {os.path.basename(input_path)} | Target vocab: {vocab_size:,}")
+    print_system_stats()
+    
     # Get file size without loading into memory
     file_size = os.path.getsize(input_path)
     file_size_gb = file_size / (1024*1024*1024)
-    print(f"File size: {file_size_gb:.2f} GB")
+    print(f"\n📁 Input file: {file_size_gb:.2f} GB ({file_size:,} bytes)")
 
     # Auto-calculate optimal chunk size if not provided
     if max_chunk_size_mb is None:
         max_chunk_size_mb, explanation = calculate_optimal_chunk_size(file_size)
-        print(f"\nAuto-calculated chunk size: {explanation}")
+        print(f"🧠 {explanation}")
     else:
-        print(f"Using manual chunk size: {max_chunk_size_mb} MB")
+        print(f"🔧 Using manual chunk size: {max_chunk_size_mb} MB")
 
     # Calculate optimal number of chunks based on file size and memory limit
     max_chunk_size_bytes = max_chunk_size_mb * 1024 * 1024
@@ -345,62 +481,106 @@ def train_bpe(input_path, vocab_size, special_tokens, max_chunk_size_mb=None):
     # Use more chunks for larger files to keep memory usage reasonable
     desired_chunks = max(num_processes, min_chunks)
     
-    print(f"Using {num_processes} processes with {desired_chunks} chunks")
-    print(f"Target chunk size: ~{max_chunk_size_mb} MB")
+    print(f"⚙️  Processing: {num_processes} CPU cores, {desired_chunks} chunks (~{max_chunk_size_mb} MB each)")
 
+    # Phase 1: Chunk boundary detection
+    print_phase_header("PHASE 1: CHUNK BOUNDARY DETECTION")
+    boundary_start = time.time()
+    
     with open(input_path, "rb") as f:
         boundaries = find_chunk_boundaries(
             f, desired_chunks, "<|endoftext|>".encode("utf-8"))
-        
-        print(f"Found {len(boundaries)-1} chunks with boundaries at: {boundaries[:5]}...")
+    
+    boundary_time = time.time() - boundary_start
+    phase_results["Boundary Detection"] = {"duration": boundary_time}
+    print(f"✅ Found {len(boundaries)-1} chunks in {boundary_time:.1f}s")
 
-    # Stream processing without shared memory
+    # Phase 2: Parallel text processing
+    print_phase_header("PHASE 2: PARALLEL TEXT PROCESSING", 
+                      f"{len(boundaries)-1} chunks across {num_processes} cores")
+    
     chunk_args = []
-    for start, end in zip(boundaries[:-1], boundaries[1:]):
+    total_chunk_size = 0
+    for i, (start, end) in enumerate(zip(boundaries[:-1], boundaries[1:])):
         chunk_size_mb = (end - start) / (1024*1024)
+        total_chunk_size += chunk_size_mb
         chunk_args.append((input_path, start, end))
-        if len(chunk_args) <= 5:  # Print first few chunk sizes
-            print(f"Chunk {len(chunk_args)}: {chunk_size_mb:.1f} MB")
+        if i < 3:  # Print first few chunk sizes
+            print(f"   Chunk {i+1}: {chunk_size_mb:.1f} MB")
+    
+    print(f"   Average chunk size: {total_chunk_size/len(chunk_args):.1f} MB")
 
-    print("Starting streaming parallel processing...")
+    processing_start = time.time()
     with mp.Pool(num_processes) as pool:
         results = pool.map(process_chunk_streaming, chunk_args)
+    processing_time = time.time() - processing_start
+    phase_results["Parallel Processing"] = {"duration": processing_time}
 
-    # Combine results from all chunks
+    # Phase 3: Result merging
+    print_phase_header("PHASE 3: MERGING RESULTS")
+    merge_start = time.time()
+    
     total_documents = sum(r.get('num_documents', 0) for r in results)
     total_tokens = sum(r.get('total_tokens', 0) for r in results)
     
     # Merge token counts from all chunks
-    print("Merging token counts from all chunks...")
+    print("🔄 Merging token counts from all chunks...")
     combined_token_counts = {}
+    merge_progress = ProgressTracker(len(results), "Token Merge", show_memory=False)
+    
     for i, result in enumerate(results):
         if 'token_counts' in result:
             for token, count in result['token_counts'].items():
                 combined_token_counts[token] = combined_token_counts.get(token, 0) + count
         # Clear processed result to save memory
         results[i] = None
+        merge_progress.update(i + 1)
         
     # Force garbage collection after processing
     del results
     gc.collect()
     
-    print(f"\nProcessing complete!")
-    print(f"Total documents: {total_documents}")
-    print(f"Total tokens: {total_tokens}")
-    print(f"Unique token types: {len(combined_token_counts)}")
-    print(f"Most common tokens: {sorted(combined_token_counts.items(), key=lambda x: x[1], reverse=True)[:10]}")
+    merge_time = time.time() - merge_start
+    phase_results["Result Merging"] = {"duration": merge_time}
     
-    print("Starting BPE training...")
+    print(f"\n📊 Processing Results:")
+    print(f"   Documents: {total_documents:,}")
+    print(f"   Total tokens: {total_tokens:,}")
+    print(f"   Unique tokens: {len(combined_token_counts):,}")
+    print(f"   Tokens/second: {total_tokens/processing_time:,.0f}")
+    
+    # Show top tokens
+    top_tokens = sorted(combined_token_counts.items(), key=lambda x: x[1], reverse=True)[:5]
+    print(f"   Top tokens: {[(token[:10], count) for token, count in top_tokens]}")
+    
+    # Phase 4: BPE training
+    bpe_start = time.time()
     merges = bpe_trainer(combined_token_counts, vocab_size, special_tokens)
+    bpe_time = time.time() - bpe_start
+    phase_results["BPE Training"] = {"duration": bpe_time}
+    
+    # Phase 5: Vocabulary building
+    print_phase_header("PHASE 5: VOCABULARY BUILDING")
+    vocab_start = time.time()
     vocab = bpe_vocab_builder(merges, special_tokens)
+    vocab_time = time.time() - vocab_start
+    phase_results["Vocabulary Building"] = {"duration": vocab_time}
+    
+    print(f"✅ Built vocabulary with {len(vocab):,} tokens in {vocab_time:.1f}s")
     
     # Clean up memory
     del combined_token_counts
     gc.collect()
 
-    # return:
-    # vocab: dict[int, bytes] The tokenizer vocabulary, a mapping from int (token ID in the vocabulary) to bytes (token bytes).
-    # merges: list[tuple[bytes, bytes]] A list of BPE merges produced from training. Each list item is a tuple of bytes (<token1>, <token2>), representing that <token1> was merged with <token2>. The merges should be ordered by order of creation.
+    # Final summary
+    total_training_time = time.time() - training_start
+    phase_results["TOTAL"] = {"duration": total_training_time}
+    print_training_summary(phase_results)
+    
+    print(f"\n🎉 BPE training completed successfully!")
+    print(f"   Final vocabulary size: {len(vocab):,}")
+    print(f"   Total merges performed: {len(merges):,}")
+    print(f"   Training time: {total_training_time/60:.1f} minutes")
 
     return vocab, merges
 
@@ -496,21 +676,32 @@ if __name__ == "__main__":
     vocab_size = 32000
     special_tokens = ["<|endoftext|>"]
 
-    print("Training BPE tokenizer with intelligent memory optimization...")
-    start_time = time.time()
+    print("🚀 Starting BPE Tokenizer Training")
+    print("=" * 50)
+    print(f"📁 Input: {os.path.basename(input_path)}")
+    print(f"🎯 Target vocabulary size: {vocab_size:,}")
+    print(f"🏷️  Special tokens: {special_tokens}")
+    print("=" * 50)
     
-    # Auto-calculate optimal chunk size based on available memory
-    # You can also manually override: max_chunk_size_mb=300
-    vocab, merges = train_bpe(input_path, vocab_size, special_tokens)
-    
-    end_time = time.time()
-    print(f"Training time: {(end_time - start_time)/60:.2f} minutes")
-    print(f"\nTraining complete!")
-    print(f"Vocabulary size: {len(vocab)}")
-    print(f"Number of merges: {len(merges)}")
-    
-    # Save to JSON files
-    save_to_json(vocab, merges, input_path, vocab_size)
+    try:
+        # Auto-calculate optimal chunk size based on available memory
+        # You can also manually override: max_chunk_size_mb=300
+        vocab, merges = train_bpe(input_path, vocab_size, special_tokens)
+        
+        # Save to JSON files
+        print_phase_header("SAVING RESULTS")
+        save_start = time.time()
+        save_to_json(vocab, merges, input_path, vocab_size)
+        save_time = time.time() - save_start
+        print(f"✅ Results saved in {save_time:.1f}s")
+        
+        print(f"\n🎉 SUCCESS! BPE tokenizer training completed!")
+        
+    except KeyboardInterrupt:
+        print(f"\n⚠️  Training interrupted by user")
+    except Exception as e:
+        print(f"\n❌ Error during training: {e}")
+        raise
     
 
 
