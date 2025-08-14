@@ -326,6 +326,7 @@ def get_byte_pair(word_tokens: list[bytes]):
     return pairs
 
 def count_pairs_from_tokenizations(word_to_tokens: dict[str, list[bytes]], token_counts: dict[str, int]) -> dict[tuple[bytes, bytes], int]:
+    """Full pair counting - used for initial count only."""
     byte_pair_dict = {}
 
     for word, count in token_counts.items():
@@ -335,6 +336,54 @@ def count_pairs_from_tokenizations(word_to_tokens: dict[str, list[bytes]], token
             byte_pair_dict[byte_pair] = byte_pair_dict.get(byte_pair, 0) + count
 
     return byte_pair_dict
+
+def apply_merge_and_update_pairs(
+    word_to_tokens: dict[str, list[bytes]], 
+    token_counts: dict[str, int],
+    pair_counts: dict[tuple[bytes, bytes], int],
+    merged_pair: tuple[bytes, bytes]
+) -> tuple[dict[tuple[bytes, bytes], int], int]:
+    """Apply merge to all relevant words and update pair counts efficiently."""
+    
+    words_affected = 0
+    words_to_update = []
+    
+    # First pass: find words that contain the pair and collect their old pairs
+    for word in word_to_tokens:
+        old_tokens = word_to_tokens[word]
+        # Check if this word contains the pair to merge
+        contains_pair = False
+        for i in range(len(old_tokens) - 1):
+            if old_tokens[i] == merged_pair[0] and old_tokens[i+1] == merged_pair[1]:
+                contains_pair = True
+                break
+        
+        if contains_pair:
+            words_to_update.append(word)
+            words_affected += 1
+            
+            # Remove old pairs from counts
+            old_pairs = get_byte_pair(old_tokens)
+            word_count = token_counts[word]
+            for pair in old_pairs:
+                if pair in pair_counts:
+                    pair_counts[pair] -= word_count
+                    if pair_counts[pair] <= 0:
+                        del pair_counts[pair]
+    
+    # Second pass: apply merges and add new pairs
+    for word in words_to_update:
+        old_tokens = word_to_tokens[word]
+        new_tokens = merge_tokens(old_tokens, merged_pair)
+        word_to_tokens[word] = new_tokens
+        
+        # Add new pairs from the updated word
+        new_pairs = get_byte_pair(new_tokens)
+        word_count = token_counts[word]
+        for pair in new_pairs:
+            pair_counts[pair] = pair_counts.get(pair, 0) + word_count
+    
+    return pair_counts, words_affected
 
 def merge_tokens(tokens: list[bytes], pair: tuple[bytes, bytes]) -> list[bytes]:
     new_tokens = []
@@ -396,11 +445,15 @@ def bpe_trainer(token_counts: dict[str, int], vocab_size: int, special_tokens: l
     merges = []
     merge_progress = ProgressTracker(num_merges, "BPE Merges")
     
+    # Initial pair counting (only done once)
+    print("🔧 Computing initial pair counts...")
+    initial_pair_start = time.time()
+    pair_counts = count_pairs_from_tokenizations(word_to_tokens, token_counts)
+    initial_pair_time = time.time() - initial_pair_start
+    print(f"✅ Initial pair counting complete in {initial_pair_time:.1f}s ({len(pair_counts):,} unique pairs)")
+    
     for merge_num in range(num_merges):
         merge_start = time.time()
-        
-        # Count all pairs across the current vocabulary
-        pair_counts = count_pairs_from_tokenizations(word_to_tokens, token_counts)
         
         if not pair_counts:
             print("\n⚠️  No more pairs to merge!")
@@ -412,21 +465,18 @@ def bpe_trainer(token_counts: dict[str, int], vocab_size: int, special_tokens: l
         
         pair_to_merge, frequency = most_frequent_pair
         
-        # Clear pair_counts to free memory
-        del pair_counts
-        
         # Record the merge
         merge_tuple = (pair_to_merge[0], pair_to_merge[1])
         merges.append(merge_tuple)
         
-        # Apply the merge to all words
-        words_affected = 0
-        for word in word_to_tokens:
-            word_to_tokens_set = set(word_to_tokens[word])
-            if pair_to_merge[0] in word_to_tokens_set and pair_to_merge[1] in word_to_tokens_set:
-                word_to_tokens[word] = merge_tokens(word_to_tokens[word], pair_to_merge)
-                words_affected += 1
-
+        # Remove the merged pair from consideration
+        del pair_counts[pair_to_merge]
+        
+        # Apply merge and update pair counts efficiently
+        pair_counts, words_affected = apply_merge_and_update_pairs(
+            word_to_tokens, token_counts, pair_counts, pair_to_merge
+        )
+        
         # Update progress with detailed info
         merge_time = time.time() - merge_start
         extra_info = f"| freq: {frequency:,} | affected: {words_affected:,} | {merge_time:.2f}s"
@@ -436,6 +486,19 @@ def bpe_trainer(token_counts: dict[str, int], vocab_size: int, special_tokens: l
         if (merge_num + 1) % 1000 == 0:
             pair_str = f"{pair_to_merge[0]} + {pair_to_merge[1]}"
             print(f"\n   Merge #{merge_num + 1}: {pair_str} (freq: {frequency:,}, affected: {words_affected:,} words)")
+            
+        # Optional memory check and early termination
+        if (merge_num + 1) % 5000 == 0:
+            memory = psutil.virtual_memory()
+            if memory.percent > 90:
+                print(f"\n⚠️  High memory usage ({memory.percent:.1f}%) - consider stopping or reducing chunk size")
+            print(f"   Remaining pairs to consider: {len(pair_counts):,}")
+            
+        # Early termination if frequency gets very low (optional optimization)
+        if frequency < 2 and merge_num > num_merges * 0.8:
+            print(f"\n💡 Early termination: frequency dropped to {frequency} at merge {merge_num + 1}")
+            print(f"   Continuing might not provide significant compression gains")
+            break
 
     print(f"\n✅ BPE training complete! Performed {len(merges):,} merges.")
     
